@@ -1,28 +1,38 @@
+/*
+ * melonds_interface.cpp
+ * ---------------------
+ * C++ implementation of the C API declared in melonds_interface.h.
+ *
+ * This file is the only place that touches melonDS internals directly.
+ * Everything above this layer speaks plain C and knows nothing about
+ * C++ classes or the melonDS namespace.
+ */
+
 #include "melonds_interface.h"
 
 #include "../melonDS/src/NDS.h"
 #include "../melonDS/src/NDSCart.h"
 #include "../melonDS/src/Args.h"
 #include "../melonDS/src/GPU.h"
+#include "../melonDS/src/GPU_Soft.h"
 #include "../melonDS/src/SPU.h"
 #include "../melonDS/src/Platform.h"
 #include "../melonDS/src/Savestate.h"
 #include "../melonDS/src/FreeBIOS.h"
 #include "../melonDS/src/SPI_Firmware.h"
-#include "../melonDS/src/GPU_Soft.h"
+#include "../melonDS/src/RTC.h"
 
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
 #include <ctime>
-#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
 
-// ---------------------------------------------------------------------------
-// Handle struct
-// ---------------------------------------------------------------------------
+/* ------------------------------------------------------------------ */
+/*  Internal handle struct                                              */
+/* ------------------------------------------------------------------ */
 
 struct MelonDSHandle {
     std::unique_ptr<melonDS::NDS> nds;
@@ -31,37 +41,39 @@ struct MelonDSHandle {
     std::string bios9_path;
     std::string firmware_path;
 
-    uint32_t current_keys  = 0;
-    bool     touch_active  = false;
-    int      touch_x       = 0;
-    int      touch_y       = 0;
+    uint32_t current_keys = 0;
+    bool     touch_active = false;
+    int      touch_x      = 0;
+    int      touch_y      = 0;
 
     bool video_enabled = true;
     bool audio_enabled = false;
 
     uint32_t framebuffer[256 * 384] = {};
-    uint64_t frame_count = 0;
 
-    // RTC: track last real-time sync (milliseconds since epoch)
-    // Sync every real second regardless of emulation speed,
-    // mirroring libmgba's behaviour of always using the host clock.
-    int64_t last_rtc_sync_ms = 0;
+    static constexpr uint32_t AUDIO_BUF_PAIRS = 65536;
+    int16_t  audio_buf[AUDIO_BUF_PAIRS * 2]   = {};
+    uint32_t audio_write_pos = 0;
+    uint32_t audio_read_pos  = 0;
 
+    uint64_t    frame_count = 0;
     std::string last_error;
 
     void set_error(const char* msg) { last_error = msg ? msg : ""; }
     void clear_error()              { last_error.clear(); }
 };
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
+/* ------------------------------------------------------------------ */
+/*  Internal helpers                                                    */
+/* ------------------------------------------------------------------ */
 
-static melonDS::NDS* get_nds(MelonDSHandle* h) {
+static melonDS::NDS* get_nds(MelonDSHandle* h)
+{
     return h ? h->nds.get() : nullptr;
 }
 
-static void apply_input(MelonDSHandle* h) {
+static void apply_input(MelonDSHandle* h)
+{
     auto* nds = get_nds(h);
     if (!nds) return;
     uint32_t hw_keys = (~h->current_keys) & 0xFFF;
@@ -72,7 +84,8 @@ static void apply_input(MelonDSHandle* h) {
         nds->ReleaseScreen();
 }
 
-static void copy_framebuffer(MelonDSHandle* h) {
+static void copy_framebuffer(MelonDSHandle* h)
+{
     auto* nds = get_nds(h);
     if (!nds || !h->video_enabled) return;
 
@@ -83,20 +96,49 @@ static void copy_framebuffer(MelonDSHandle* h) {
     void* bot = nullptr;
 
     soft->GetFramebuffersDirect(&top, &bot, 0);
-    uint32_t* t = static_cast<uint32_t*>(top);
-    bool has_data = false;
-    for (int i = 0; i < 256 * 192; i++) {
-        if (t[i]) { has_data = true; break; }
-    }
-    if (!has_data) {
-        soft->GetFramebuffersDirect(&top, &bot, 1);
+
+    if (top) {
+        bool has_data = false;
+        const uint32_t* t = static_cast<const uint32_t*>(top);
+        for (int i = 0; i < 256 * 4; i++) {
+            if (t[i]) { has_data = true; break; }
+        }
+        if (!has_data)
+            soft->GetFramebuffersDirect(&top, &bot, 1);
     }
 
     if (top) memcpy(h->framebuffer,             top, 256 * 192 * sizeof(uint32_t));
     if (bot) memcpy(h->framebuffer + 256 * 192, bot, 256 * 192 * sizeof(uint32_t));
 }
 
-static melonDS::NDSArgs build_nds_args(MelonDSHandle* h) {
+static void drain_audio(MelonDSHandle* h)
+{
+    auto* nds = get_nds(h);
+    if (!nds || !h->audio_enabled) return;
+
+    constexpr uint32_t CHUNK = 1024;
+    int16_t tmp[CHUNK * 2];
+
+    for (;;) {
+        uint32_t got = nds->SPU.ReadOutput(tmp, CHUNK);
+        if (got == 0) break;
+
+        uint32_t mask       = MelonDSHandle::AUDIO_BUF_PAIRS - 1;
+        uint32_t used       = (h->audio_write_pos - h->audio_read_pos) & mask;
+        uint32_t free_pairs = (MelonDSHandle::AUDIO_BUF_PAIRS - 1) - used;
+        uint32_t to_copy    = (got < free_pairs) ? got : free_pairs;
+
+        for (uint32_t i = 0; i < to_copy; i++) {
+            uint32_t idx = (h->audio_write_pos + i) & mask;
+            h->audio_buf[idx * 2]     = tmp[i * 2];
+            h->audio_buf[idx * 2 + 1] = tmp[i * 2 + 1];
+        }
+        h->audio_write_pos = (h->audio_write_pos + to_copy) & mask;
+    }
+}
+
+static melonDS::NDSArgs build_args(MelonDSHandle* h)
+{
     melonDS::NDSArgs args = {};
 
     if (!h->bios7_path.empty()) {
@@ -108,6 +150,7 @@ static melonDS::NDSArgs build_nds_args(MelonDSHandle* h) {
             args.ARM7BIOS = std::move(bios);
         }
     }
+
     if (!h->bios9_path.empty()) {
         FILE* f = fopen(h->bios9_path.c_str(), "rb");
         if (f) {
@@ -127,7 +170,7 @@ static melonDS::NDSArgs build_nds_args(MelonDSHandle* h) {
             std::vector<uint8_t> buf(sz);
             fread(buf.data(), 1, sz, f);
             fclose(f);
-            args.Firmware = melonDS::Firmware(buf.data(), sz);
+            args.Firmware = melonDS::Firmware(buf.data(), (uint32_t)sz);
         }
     } else {
         args.Firmware = melonDS::Firmware(0);
@@ -136,44 +179,9 @@ static melonDS::NDSArgs build_nds_args(MelonDSHandle* h) {
     return args;
 }
 
-static std::vector<uint8_t> read_file(const char* path) {
-    std::vector<uint8_t> data;
-    if (!path) return data;
-    FILE* f = fopen(path, "rb");
-    if (!f) return data;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz > 0) {
-        data.resize(sz);
-        fread(data.data(), 1, sz, f);
-    }
-    fclose(f);
-    return data;
-}
-
-// ---------------------------------------------------------------------------
-// RTC sync helper — reads system clock and sets DS RTC
-// Mirrors libmgba's approach: host time is always authoritative.
-// ---------------------------------------------------------------------------
-static void sync_rtc_to_host(MelonDSHandle* h) {
-    auto now_sys = std::chrono::system_clock::now();
-    std::time_t t = std::chrono::system_clock::to_time_t(now_sys);
-    std::tm* tm = std::localtime(&t);
-    if (!tm) return;
-    h->nds->RTC.SetDateTime(
-        tm->tm_year + 1900,
-        tm->tm_mon  + 1,
-        tm->tm_mday,
-        tm->tm_hour,
-        tm->tm_min,
-        tm->tm_sec
-    );
-}
-
-// ---------------------------------------------------------------------------
-// C API
-// ---------------------------------------------------------------------------
+/* ------------------------------------------------------------------ */
+/*  C API implementation                                                */
+/* ------------------------------------------------------------------ */
 
 extern "C" {
 
@@ -189,7 +197,7 @@ MelonDSHandle* melonds_create(const char* bios7_path,
     if (firmware_path) h->firmware_path = firmware_path;
 
     try {
-        melonDS::NDSArgs args = build_nds_args(h);
+        melonDS::NDSArgs args = build_args(h);
         h->nds = std::make_unique<melonDS::NDS>(std::move(args));
     } catch (const std::exception& e) {
         h->set_error(e.what());
@@ -198,253 +206,357 @@ MelonDSHandle* melonds_create(const char* bios7_path,
     return h;
 }
 
-void melonds_destroy(MelonDSHandle* h) { delete h; }
-
-void melonds_reset(MelonDSHandle* h) {
-    auto* nds = get_nds(h);
-    if (!nds) return;
-    nds->Reset();
-    h->frame_count = 0;
-    h->last_rtc_sync_ms = 0;  // force RTC resync after reset
-    h->clear_error();
+void melonds_destroy(MelonDSHandle* h)
+{
+    delete h;
 }
 
-// ---------------------------------------------------------------------------
-// melonds_set_rtc — manual one-shot set (call at startup or after reset)
-// ---------------------------------------------------------------------------
-void melonds_set_rtc(MelonDSHandle* h,
-                     int year, int month,  int day,
-                     int hour, int minute, int second)
+void melonds_reset(MelonDSHandle* h)
 {
     auto* nds = get_nds(h);
     if (!nds) return;
-    nds->RTC.SetDateTime(year, month, day, hour, minute, second);
-    // Record sync time so run_frame doesn't immediately overwrite it
-    h->last_rtc_sync_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
+    nds->Reset();
+    h->frame_count     = 0;
+    h->audio_write_pos = 0;
+    h->audio_read_pos  = 0;
+    h->clear_error();
 }
 
-// ---------------------------------------------------------------------------
-// melonds_load_rom
-// ---------------------------------------------------------------------------
-int melonds_load_rom(MelonDSHandle* h, const char* rom_path) {
+int melonds_load_rom(MelonDSHandle* h, const char* rom_path)
+{
     if (!h || !rom_path) return 0;
     auto* nds = get_nds(h);
     if (!nds) { h->set_error("NDS not initialised"); return 0; }
 
-    std::vector<uint8_t> rom_data = read_file(rom_path);
-    if (rom_data.empty()) { h->set_error("Cannot open or read ROM"); return 0; }
+    FILE* f = fopen(rom_path, "rb");
+    if (!f) { h->set_error("Cannot open ROM file"); return 0; }
+
+    fseek(f, 0, SEEK_END);
+    long rom_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (rom_size <= 0) { fclose(f); h->set_error("ROM file is empty"); return 0; }
+
+    std::vector<uint8_t> rom_data(rom_size);
+    fread(rom_data.data(), 1, rom_size, f);
+    fclose(f);
 
     auto cart = melonDS::NDSCart::ParseROM(
-        rom_data.data(), (uint32_t)rom_data.size(), nullptr, {});
+        rom_data.data(), (uint32_t)rom_size, nullptr, {});
     if (!cart) { h->set_error("Failed to parse ROM"); return 0; }
 
     nds->SetNDSCart(std::move(cart));
     nds->Reset();
     nds->SetupDirectBoot(rom_path);
     nds->Start();
-    h->frame_count = 0;
-    h->last_rtc_sync_ms = 0;  // force RTC resync after load
+    h->frame_count     = 0;
+    h->audio_write_pos = 0;
+    h->audio_read_pos  = 0;
     h->clear_error();
     return 1;
 }
 
-// ---------------------------------------------------------------------------
-// melonds_load_rom_with_save
-// ---------------------------------------------------------------------------
-int melonds_load_rom_with_save(MelonDSHandle* h,
-                                const char*    rom_path,
-                                const char*    save_path)
+void melonds_run_frame(MelonDSHandle* h)
 {
-    if (!h || !rom_path) return 0;
-
-    if (!melonds_load_rom(h, rom_path)) return 0;
-
-    if (!save_path) return 1;
-
-    std::vector<uint8_t> save_data = read_file(save_path);
-    if (save_data.empty()) {
-        fprintf(stdout, "py-melonds: save file not found or empty: %s\n", save_path);
-        return 1;
-    }
-
-    auto* nds  = get_nds(h);
-    auto* cart = nds->NDSCartSlot.GetCart();
-    if (!cart) {
-        fprintf(stdout, "py-melonds: warning — no cart, save not injected\n");
-        return 1;
-    }
-
-    uint8_t* sram     = cart->GetSaveMemory();
-    uint32_t sram_len = cart->GetSaveMemoryLength();
-
-    if (!sram || sram_len == 0) {
-        fprintf(stdout, "py-melonds: cart has no SRAM — save not injected\n");
-        return 1;
-    }
-
-    size_t copy_len = std::min((size_t)sram_len, save_data.size());
-    memcpy(sram, save_data.data(), copy_len);
-
-    fprintf(stdout, "py-melonds: injected %zu / %u bytes of save data\n",
-            copy_len, sram_len);
-    return 1;
-}
-
-// ---------------------------------------------------------------------------
-// melonds_save_sram
-// ---------------------------------------------------------------------------
-int melonds_save_sram(MelonDSHandle* h, const char* save_path) {
-    if (!h || !save_path) return 0;
-    auto* nds = get_nds(h);
-    if (!nds) { h->set_error("NDS not initialised"); return 0; }
-
-    auto* cart = nds->NDSCartSlot.GetCart();
-    if (!cart) { h->set_error("No cart loaded"); return 0; }
-
-    uint8_t* sram     = cart->GetSaveMemory();
-    uint32_t sram_len = cart->GetSaveMemoryLength();
-
-    if (!sram || sram_len == 0) {
-        h->set_error("Cart has no save memory");
-        return 0;
-    }
-
-    FILE* f = fopen(save_path, "wb");
-    if (!f) { h->set_error("Cannot open save file for writing"); return 0; }
-    fwrite(sram, 1, sram_len, f);
-    fclose(f);
-    return 1;
-}
-
-// ---------------------------------------------------------------------------
-// melonds_run_frame — the hot path
-// RTC is resynced to host system time once per real second,
-// regardless of emulation speed. Mirrors libmgba behaviour.
-// ---------------------------------------------------------------------------
-void melonds_run_frame(MelonDSHandle* h) {
     auto* nds = get_nds(h);
     if (!nds) return;
-
     apply_input(h);
     nds->RunFrame();
     h->frame_count++;
+    drain_audio(h);
     if (h->video_enabled) copy_framebuffer(h);
-
-    // Resync RTC to host clock every real second
-    int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    if (now_ms - h->last_rtc_sync_ms >= 1000) {
-        h->last_rtc_sync_ms = now_ms;
-        sync_rtc_to_host(h);
-    }
 }
 
-void melonds_set_keys(MelonDSHandle* h, uint32_t keys) {
+void melonds_set_keys(MelonDSHandle* h, uint32_t keys)
+{
     if (h) h->current_keys = keys;
 }
 
-void melonds_set_touch(MelonDSHandle* h, int x, int y) {
+void melonds_set_touch(MelonDSHandle* h, int x, int y)
+{
     if (!h) return;
     h->touch_active = true;
     h->touch_x = x;
     h->touch_y = y;
 }
 
-void melonds_release_touch(MelonDSHandle* h) {
-    if (!h) return;
-    h->touch_active = false;
+void melonds_release_touch(MelonDSHandle* h)
+{
+    if (h) h->touch_active = false;
 }
 
-uint8_t melonds_mem_read_8(MelonDSHandle* h, uint32_t addr) {
+/* ------------------------------------------------------------------ */
+/*  Memory                                                              */
+/* ------------------------------------------------------------------ */
+
+uint8_t melonds_mem_read_8(MelonDSHandle* h, uint32_t addr)
+{
     auto* nds = get_nds(h);
     return nds ? nds->ARM9Read8(addr) : 0;
 }
 
-uint16_t melonds_mem_read_16(MelonDSHandle* h, uint32_t addr) {
+uint16_t melonds_mem_read_16(MelonDSHandle* h, uint32_t addr)
+{
     auto* nds = get_nds(h);
     return nds ? nds->ARM9Read16(addr) : 0;
 }
 
-uint32_t melonds_mem_read_32(MelonDSHandle* h, uint32_t addr) {
+uint32_t melonds_mem_read_32(MelonDSHandle* h, uint32_t addr)
+{
     auto* nds = get_nds(h);
     return nds ? nds->ARM9Read32(addr) : 0;
 }
 
-void melonds_mem_write_8(MelonDSHandle* h, uint32_t addr, uint8_t val) {
+void melonds_mem_write_8(MelonDSHandle* h, uint32_t addr, uint8_t val)
+{
     auto* nds = get_nds(h);
     if (nds) nds->ARM9Write8(addr, val);
 }
 
-void melonds_mem_write_16(MelonDSHandle* h, uint32_t addr, uint16_t val) {
+void melonds_mem_write_16(MelonDSHandle* h, uint32_t addr, uint16_t val)
+{
     auto* nds = get_nds(h);
     if (nds) nds->ARM9Write16(addr, val);
 }
 
-void melonds_mem_write_32(MelonDSHandle* h, uint32_t addr, uint32_t val) {
+void melonds_mem_write_32(MelonDSHandle* h, uint32_t addr, uint32_t val)
+{
     auto* nds = get_nds(h);
     if (nds) nds->ARM9Write32(addr, val);
 }
 
 size_t melonds_mem_read_bulk(MelonDSHandle* h, uint32_t addr,
-                              uint8_t* out_buf, size_t length) {
+                              uint8_t* out_buf, size_t length)
+{
     if (!out_buf || length == 0) return 0;
     auto* nds = get_nds(h);
     if (!nds) return 0;
-    if (addr >= 0x02000000 && addr + length <= 0x02400000) {
+
+    if (addr >= 0x02000000 && (addr + length) <= 0x02400000) {
         memcpy(out_buf, nds->MainRAM + (addr - 0x02000000), length);
         return length;
     }
+
     for (size_t i = 0; i < length; i++)
         out_buf[i] = nds->ARM9Read8(addr + (uint32_t)i);
     return length;
 }
 
-int melonds_savestate(MelonDSHandle* h, const char* path) {
+size_t melonds_mem_write_bulk(MelonDSHandle* h, uint32_t addr,
+                               const uint8_t* buf, size_t length)
+{
+    if (!buf || length == 0) return 0;
+    auto* nds = get_nds(h);
+    if (!nds) return 0;
+
+    if (addr >= 0x02000000 && (addr + length) <= 0x02400000) {
+        memcpy(nds->MainRAM + (addr - 0x02000000), buf, length);
+        return length;
+    }
+
+    for (size_t i = 0; i < length; i++)
+        nds->ARM9Write8(addr + (uint32_t)i, buf[i]);
+    return length;
+}
+
+/* ------------------------------------------------------------------ */
+/*  SRAM                                                                */
+/* ------------------------------------------------------------------ */
+
+static melonDS::NDSCart::CartCommon* get_cart(MelonDSHandle* h)
+{
+    auto* nds = get_nds(h);
+    if (!nds) return nullptr;
+    return nds->NDSCartSlot.GetCart();
+}
+
+size_t melonds_sram_size(MelonDSHandle* h)
+{
+    auto* cart = get_cart(h);
+    if (!cart) return 0;
+    return cart->GetSaveMemoryLength();
+}
+
+size_t melonds_sram_read(MelonDSHandle* h, uint8_t* out_buf, size_t buf_size)
+{
+    auto* cart = get_cart(h);
+    if (!cart || !out_buf) return 0;
+    size_t sz = cart->GetSaveMemoryLength();
+    if (sz == 0 || buf_size < sz) return 0;
+    const uint8_t* src = cart->GetSaveMemory();
+    if (!src) return 0;
+    memcpy(out_buf, src, sz);
+    return sz;
+}
+
+int melonds_sram_write(MelonDSHandle* h, const uint8_t* buf, size_t size)
+{
+    auto* cart = get_cart(h);
+    if (!cart || !buf) return 0;
+    if (cart->GetSaveMemoryLength() != size) return 0;
+    cart->SetSaveMemory(buf, (uint32_t)size);
+    return 1;
+}
+
+int melonds_sram_load_file(MelonDSHandle* h, const char* path)
+{
+    if (!h || !path) return 0;
+    auto* cart = get_cart(h);
+    if (!cart) { h->set_error("No cart loaded"); return 0; }
+
+    FILE* f = fopen(path, "rb");
+    if (!f) { h->set_error("Cannot open save file"); return 0; }
+
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { fclose(f); h->set_error("Save file is empty"); return 0; }
+
+    std::vector<uint8_t> buf(sz);
+    fread(buf.data(), 1, sz, f);
+    fclose(f);
+
+    if (cart->GetSaveMemoryLength() != (size_t)sz) {
+        h->set_error("Save file size does not match cart save memory size");
+        return 0;
+    }
+
+    cart->SetSaveMemory(buf.data(), (uint32_t)sz);
+    h->clear_error();
+    return 1;
+}
+
+int melonds_sram_save_file(MelonDSHandle* h, const char* path)
+{
+    if (!h || !path) return 0;
+    auto* cart = get_cart(h);
+    if (!cart) { h->set_error("No cart loaded"); return 0; }
+
+    size_t sz = cart->GetSaveMemoryLength();
+    if (sz == 0) { h->set_error("Cart has no save memory"); return 0; }
+
+    const uint8_t* src = cart->GetSaveMemory();
+    if (!src) { h->set_error("Save memory pointer is null"); return 0; }
+
+    FILE* f = fopen(path, "wb");
+    if (!f) { h->set_error("Cannot open output file for writing"); return 0; }
+
+    fwrite(src, 1, sz, f);
+    fclose(f);
+    h->clear_error();
+    return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/*  RTC                                                                 */
+/* ------------------------------------------------------------------ */
+
+/* Convert integer to BCD. e.g. 23 -> 0x23 */
+static uint8_t to_bcd(int val)
+{
+    return (uint8_t)(((val / 10) << 4) | (val % 10));
+}
+
+void melonds_rtc_set_time(MelonDSHandle* h,
+                           int year, int month,  int day,
+                           int hour, int minute, int second)
+{
+    auto* nds = get_nds(h);
+    if (!nds) return;
+
+    /*
+     * melonDS RTC::StateData uses a DateTime[7] array of BCD bytes.
+     * Layout confirmed from RTC.cpp::GetDateTime():
+     *   [0] year offset from 2000, [1] month, [2] day, [3] day-of-week,
+     *   [4] hour (24h), [5] minute, [6] second
+     */
+    struct tm t = {};
+    t.tm_year = year - 1900;
+    t.tm_mon  = month - 1;
+    t.tm_mday = day;
+    mktime(&t);
+
+    melonDS::RTC::StateData state = {};
+    state.DateTime[0] = to_bcd(year - 2000);
+    state.DateTime[1] = to_bcd(month);
+    state.DateTime[2] = to_bcd(day);
+    state.DateTime[3] = to_bcd(t.tm_wday);
+    state.DateTime[4] = to_bcd(hour);
+    state.DateTime[5] = to_bcd(minute);
+    state.DateTime[6] = to_bcd(second);
+
+    nds->RTC.SetState(state);
+}
+
+void melonds_rtc_sync_to_host(MelonDSHandle* h)
+{
+    if (!h) return;
+    time_t now = time(nullptr);
+    struct tm* t = localtime(&now);
+    if (!t) return;
+    melonds_rtc_set_time(h,
+        t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+        t->tm_hour, t->tm_min, t->tm_sec);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Save states                                                         */
+/* ------------------------------------------------------------------ */
+
+int melonds_savestate(MelonDSHandle* h, const char* path)
+{
     auto* nds = get_nds(h);
     if (!nds || !path) return 0;
+
     melonDS::Savestate ss;
     nds->DoSavestate(&ss);
     ss.Finish();
+
     FILE* f = fopen(path, "wb");
-    if (!f) { h->set_error("Cannot open savestate for write"); return 0; }
+    if (!f) { h->set_error("Cannot open save state file for writing"); return 0; }
     fwrite(ss.Buffer(), 1, ss.BufferLength(), f);
     fclose(f);
     return 1;
 }
 
-int melonds_loadstate(MelonDSHandle* h, const char* path) {
+int melonds_loadstate(MelonDSHandle* h, const char* path)
+{
     auto* nds = get_nds(h);
     if (!nds || !path) return 0;
+
     FILE* f = fopen(path, "rb");
-    if (!f) { h->set_error("Cannot open savestate for read"); return 0; }
+    if (!f) { h->set_error("Cannot open save state file for reading"); return 0; }
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
     std::vector<uint8_t> buf(sz);
     fread(buf.data(), 1, sz, f);
     fclose(f);
+
     melonDS::Savestate ss(buf.data(), (uint32_t)sz, false);
     nds->DoSavestate(&ss);
     return 1;
 }
 
-int melonds_savestate_mem(MelonDSHandle* h, uint8_t** out_buf, size_t* out_size) {
+int melonds_savestate_mem(MelonDSHandle* h, uint8_t** out_buf, size_t* out_size)
+{
     auto* nds = get_nds(h);
     if (!nds || !out_buf || !out_size) return 0;
+
     melonDS::Savestate ss;
     nds->DoSavestate(&ss);
     ss.Finish();
+
     size_t sz = ss.BufferLength();
     uint8_t* buf = (uint8_t*)malloc(sz);
-    if (!buf) { h->set_error("Out of memory for savestate"); return 0; }
+    if (!buf) { h->set_error("Out of memory"); return 0; }
     memcpy(buf, ss.Buffer(), sz);
     *out_buf  = buf;
     *out_size = sz;
     return 1;
 }
 
-int melonds_loadstate_mem(MelonDSHandle* h, const uint8_t* buf, size_t size) {
+int melonds_loadstate_mem(MelonDSHandle* h, const uint8_t* buf, size_t size)
+{
     auto* nds = get_nds(h);
     if (!nds || !buf || size == 0) return 0;
     melonDS::Savestate ss(const_cast<uint8_t*>(buf), (uint32_t)size, false);
@@ -452,28 +564,94 @@ int melonds_loadstate_mem(MelonDSHandle* h, const uint8_t* buf, size_t size) {
     return 1;
 }
 
-void melonds_free_buf(uint8_t* buf) { free(buf); }
+void melonds_free_buf(uint8_t* buf)
+{
+    free(buf);
+}
 
-void melonds_set_video_enabled(MelonDSHandle* h, int enabled) {
+/* ------------------------------------------------------------------ */
+/*  Video                                                               */
+/* ------------------------------------------------------------------ */
+
+void melonds_set_video_enabled(MelonDSHandle* h, int enabled)
+{
     if (h) h->video_enabled = (enabled != 0);
 }
 
-void melonds_set_audio_enabled(MelonDSHandle* h, int enabled) {
+void melonds_set_audio_enabled(MelonDSHandle* h, int enabled)
+{
     if (h) h->audio_enabled = (enabled != 0);
 }
 
-const uint32_t* melonds_get_framebuffer(MelonDSHandle* h) {
+const uint32_t* melonds_get_framebuffer(MelonDSHandle* h)
+{
     if (!h || !h->video_enabled) return nullptr;
     return h->framebuffer;
 }
 
-const char* melonds_get_error(MelonDSHandle* h) {
+int melonds_get_framebuffer_rgb(MelonDSHandle* h, uint8_t* out_buf)
+{
+    if (!h || !h->video_enabled || !out_buf) return 0;
+
+    const uint32_t* src = h->framebuffer;
+    uint8_t* dst = out_buf;
+    for (int i = 0; i < 256 * 384; i++) {
+        uint32_t px = src[i];
+        dst[0] = (uint8_t)((px >>  0) & 0xFF);
+        dst[1] = (uint8_t)((px >>  8) & 0xFF);
+        dst[2] = (uint8_t)((px >> 16) & 0xFF);
+        dst += 3;
+    }
+    return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Audio                                                               */
+/* ------------------------------------------------------------------ */
+
+uint32_t melonds_audio_available(MelonDSHandle* h)
+{
+    if (!h || !h->audio_enabled) return 0;
+    uint32_t mask = MelonDSHandle::AUDIO_BUF_PAIRS - 1;
+    return (h->audio_write_pos - h->audio_read_pos) & mask;
+}
+
+uint32_t melonds_audio_read(MelonDSHandle* h, int16_t* out_buf, uint32_t count)
+{
+    if (!h || !out_buf || count == 0) return 0;
+
+    uint32_t available = melonds_audio_available(h);
+    uint32_t to_read   = (count < available) ? count : available;
+    uint32_t mask      = MelonDSHandle::AUDIO_BUF_PAIRS - 1;
+
+    for (uint32_t i = 0; i < to_read; i++) {
+        uint32_t idx = (h->audio_read_pos + i) & mask;
+        out_buf[i * 2]     = h->audio_buf[idx * 2];
+        out_buf[i * 2 + 1] = h->audio_buf[idx * 2 + 1];
+    }
+    h->audio_read_pos = (h->audio_read_pos + to_read) & mask;
+    return to_read;
+}
+
+uint32_t melonds_audio_sample_rate(MelonDSHandle* h)
+{
+    (void)h;
+    return 32768;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Diagnostics                                                         */
+/* ------------------------------------------------------------------ */
+
+const char* melonds_get_error(MelonDSHandle* h)
+{
     if (!h || h->last_error.empty()) return nullptr;
     return h->last_error.c_str();
 }
 
-uint64_t melonds_get_frame_count(MelonDSHandle* h) {
+uint64_t melonds_get_frame_count(MelonDSHandle* h)
+{
     return h ? h->frame_count : 0;
 }
 
-} // extern "C"
+} /* extern "C" */

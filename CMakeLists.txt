@@ -138,16 +138,13 @@ else()
     target_compile_options(melonds PRIVATE -w)
 endif()
 
+# Copy the built library into the Python package directory
 add_custom_command(TARGET melonds POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy
         $<TARGET_FILE:melonds>
         "${CMAKE_SOURCE_DIR}/python/melonds/$<TARGET_FILE_NAME:melonds>"
     COMMENT "Copying melonds library to python/melonds/"
 )
-
-add_executable(melonds_test tests/test_c.cpp)
-target_include_directories(melonds_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(melonds_test PRIVATE melonds)
 
 message(STATUS "")
 message(STATUS "py-melonds build configuration:")

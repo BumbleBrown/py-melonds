@@ -1,25 +1,29 @@
 # Build output
 build/
-
-# Compiled library files
 *.dll
+*.so
+*.dylib
 *.exe
 *.o
 *.obj
 
-# Python cache
+# Python
 __pycache__/
 *.pyc
-
-# Personal config with hardcoded paths
-config.py
-
-# Temp melonDS build
-melonDS/build_temp/
-
-# Release folder - uploaded to GitHub Releases instead
-release/
-
-# Virtual environments
+*.pyo
 .venv/
 venv/
+*.egg-info/
+dist/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "py-melonds"
+version = "0.1.0"
+description = "Python bindings for melonDS, a Nintendo DS emulator"
+readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.10"
+
+dependencies = [
+    "cffi>=1.15",
+]
+
+[project.optional-dependencies]
+# Pillow is only needed for get_screenshot()
+screenshot = ["Pillow>=9.0"]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+
+[tool.setuptools.package-data]
+# Include the compiled shared library when it is present
+melonds = ["*.dll", "*.so", "*.dylib"]

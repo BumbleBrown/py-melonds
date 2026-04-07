@@ -1,0 +1,5 @@
+# Runtime dependency
+cffi>=1.15
+
+# Optional: only needed for MelonDSEmulator.get_screenshot()
+# Pillow>=9.0
