@@ -21,6 +21,7 @@ if(NOT EXISTS "${MELONDS_SRC}/version.h")
         "#define MELONDS_VERSION \"1.0\"\n"
         "#define MELONDS_VERSION_MAJOR 1\n"
         "#define MELONDS_VERSION_MINOR 0\n"
+        "#define MELONDS_VERSION_BASE \"1.0\"\n"
     )
 endif()
 
