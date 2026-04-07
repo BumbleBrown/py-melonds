@@ -1,0 +1,9 @@
+build/
+*.dll
+*.exe
+*.o
+*.obj
+__pycache__/
+*.pyc
+.venv/
+melonDS/build_temp/
