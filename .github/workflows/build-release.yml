@@ -53,6 +53,13 @@ jobs:
         shell: msys2 {0}
         run: cmake --build build --parallel
 
+      - name: Copy MinGW runtime DLLs
+        shell: msys2 {0}
+        run: |
+          cp /mingw64/bin/libgcc_s_seh-1.dll python/melonds/
+          cp /mingw64/bin/libstdc++-6.dll python/melonds/
+          cp /mingw64/bin/libwinpthread-1.dll python/melonds/
+
       - name: Verify library exists
         shell: msys2 {0}
         run: |
