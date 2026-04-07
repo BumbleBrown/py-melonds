@@ -39,6 +39,7 @@ jobs:
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
+            zip
 
       - name: Configure CMake
         shell: msys2 {0}
