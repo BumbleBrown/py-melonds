@@ -1,10 +1,25 @@
+# Build output
 build/
+
+# Compiled library files
 *.dll
 *.exe
 *.o
 *.obj
+
+# Python cache
 __pycache__/
 *.pyc
-.venv/
-melonDS/build_temp/
+
+# Personal config with hardcoded paths
 config.py
+
+# Temp melonDS build
+melonDS/build_temp/
+
+# Release folder - uploaded to GitHub Releases instead
+release/
+
+# Virtual environments
+.venv/
+venv/
