@@ -2,31 +2,6 @@
 melonds/emulator.py
 -------------------
 High-level Python wrapper around the melonDS C bindings.
-
-This class is intentionally modelled after the Gen 3 bot's
-LibmgbaEmulator so that porting bot logic between generations is
-straightforward. The interface you call in the NDS bot will mirror
-what the Gen 3 bot already does:
-
-    emulator = MelonDSEmulator(
-        rom_path="platinum.nds",
-        bios7_path="bios7.bin",
-        bios9_path="bios9.bin",
-    )
-
-    # Python owns the frame loop — no emulator speed limiter
-    while True:
-        emulator.set_inputs(held | pressed)
-        emulator.run_single_frame()
-        val = emulator.read_u32(0x021C489C)
-        ...
-
-Key design decisions mirroring libmgba:
-  - Video disabled by default for maximum speed
-  - Audio disabled by default (no timing lock)
-  - run_single_frame() has NO internal sleep — caller controls speed
-  - read_bytes() maps directly to Main RAM via memcpy (no per-byte overhead)
-  - save_state() / load_state() work in-memory (bytes object, no disk)
 """
 
 from __future__ import annotations
@@ -39,10 +14,6 @@ from typing import Generator, Optional
 
 from .core import ffi, lib
 
-
-# ---------------------------------------------------------------------------
-# Button bitmask constants — same names as the Gen 3 bot uses
-# ---------------------------------------------------------------------------
 
 class Button:
     A      = int(lib.MELONDS_KEY_A)
@@ -69,13 +40,7 @@ class Button:
         return cls._NAME_MAP[name]
 
 
-# ---------------------------------------------------------------------------
-# Performance tracker (mirrors PerformanceTracker in libmgba.py)
-# ---------------------------------------------------------------------------
-
 class PerformanceTracker:
-    fps_history: deque[int]
-
     def __init__(self):
         self.fps_history          = deque([0], maxlen=60)
         self._frame_counter       = 0
@@ -100,17 +65,13 @@ class PerformanceTracker:
         return time.time_ns() - self._last_frame_ns
 
 
-# ---------------------------------------------------------------------------
-# Main emulator class
-# ---------------------------------------------------------------------------
-
 class MelonDSEmulator:
     """
     Wraps a single melonDS NDS instance.
 
     Lifecycle::
 
-        emulator = MelonDSEmulator("game.nds")
+        emulator = MelonDSEmulator("game.nds", save_path="game.sav")
         while True:
             emulator.press_button("A")
             emulator.run_single_frame()
@@ -123,41 +84,48 @@ class MelonDSEmulator:
         bios7_path: Optional[str | Path] = None,
         bios9_path: Optional[str | Path] = None,
         firmware_path: Optional[str | Path] = None,
-        video_enabled: bool = False,   # off = fast, like Gen3 bot default
+        save_path: Optional[str | Path] = None,
+        video_enabled: bool = False,
         audio_enabled: bool = False,
     ):
-        self._rom_path      = str(rom_path)
-        self._bios7         = str(bios7_path)  if bios7_path    else None
-        self._bios9         = str(bios9_path)  if bios9_path    else None
-        self._firmware      = str(firmware_path) if firmware_path else None
+        self._rom_path   = str(rom_path)
+        self._bios7      = str(bios7_path)    if bios7_path    else None
+        self._bios9      = str(bios9_path)    if bios9_path    else None
+        self._firmware   = str(firmware_path) if firmware_path else None
+        self._save_path  = str(save_path)     if save_path     else None
 
         self._video_enabled = video_enabled
         self._audio_enabled = audio_enabled
 
-        # Held buttons accumulate across frames; pressed are cleared each frame
         self._held_inputs:    int = 0
         self._pressed_inputs: int = 0
-
         self._performance = PerformanceTracker()
 
-        # Create the native instance
+        # Create native instance
         self._handle = lib.melonds_create(
-            self._bios7.encode()    if self._bios7    else ffi.NULL,
-            self._bios9.encode()    if self._bios9    else ffi.NULL,
-            self._firmware.encode() if self._firmware else ffi.NULL,
+            self._bios7.encode()     if self._bios7     else ffi.NULL,
+            self._bios9.encode()     if self._bios9     else ffi.NULL,
+            self._firmware.encode()  if self._firmware  else ffi.NULL,
         )
         if self._handle == ffi.NULL:
             raise RuntimeError("melonds_create() returned NULL")
 
-        # Apply speed settings immediately
         lib.melonds_set_video_enabled(self._handle, int(video_enabled))
         lib.melonds_set_audio_enabled(self._handle, int(audio_enabled))
 
         # Load ROM
-        ok = lib.melonds_load_rom(
-            self._handle,
-            self._rom_path.encode()
-        )
+        if self._save_path:
+            ok = lib.melonds_load_rom_with_save(
+                self._handle,
+                self._rom_path.encode(),
+                self._save_path.encode(),
+            )
+        else:
+            ok = lib.melonds_load_rom(
+                self._handle,
+                self._rom_path.encode(),
+            )
+
         if not ok:
             err = lib.melonds_get_error(self._handle)
             msg = ffi.string(err).decode() if err != ffi.NULL else "unknown"
@@ -165,27 +133,45 @@ class MelonDSEmulator:
             self._handle = ffi.NULL
             raise RuntimeError(f"Failed to load ROM '{rom_path}': {msg}")
 
+    def __repr__(self) -> str:
+        return (
+            f"MelonDSEmulator(rom={self._rom_path!r}, "
+            f"save={self._save_path!r}, "
+            f"frames={self.frame_count})"
+        )
+
     def __del__(self):
         if hasattr(self, "_handle") and self._handle != ffi.NULL:
             lib.melonds_destroy(self._handle)
             self._handle = ffi.NULL
 
     # ------------------------------------------------------------------
+    # RTC
+    # ------------------------------------------------------------------
+
+    def set_rtc(self, year: int, month: int, day: int,
+                hour: int, minute: int, second: int) -> None:
+        """
+        Sync the DS real-time clock to the given date/time.
+        Call this after creating the emulator to match PC system time.
+        """
+        lib.melonds_set_rtc(self._handle, year, month, day, hour, minute, second)
+
+    def sync_rtc_to_now(self) -> None:
+        """Convenience: set DS RTC to the current PC date/time."""
+        import datetime
+        now = datetime.datetime.now()
+        self.set_rtc(now.year, now.month, now.day,
+                     now.hour, now.minute, now.second)
+
+    # ------------------------------------------------------------------
     # Frame execution
     # ------------------------------------------------------------------
 
     def run_single_frame(self) -> None:
-        """
-        Execute one DS frame synchronously. No sleep, no limiter.
-        Python controls timing — call in a tight loop for max speed.
-
-        Mirrors LibmgbaEmulator.run_single_frame() from the Gen 3 bot.
-        """
-        # Combine held + pressed, then clear pressed for next frame
         combined = self._held_inputs | self._pressed_inputs
         lib.melonds_set_keys(self._handle, combined)
         self._pressed_inputs = 0
-
         lib.melonds_run_frame(self._handle)
         self._performance.track_frame()
 
@@ -198,24 +184,18 @@ class MelonDSEmulator:
         return self._performance.current_fps
 
     # ------------------------------------------------------------------
-    # Input control
+    # Input
     # ------------------------------------------------------------------
 
     def press_button(self, button: str | int) -> None:
-        """
-        Queue a button to be pressed for exactly one frame.
-        If the same button was held last frame it is first released.
-        """
         mask = button if isinstance(button, int) else Button.from_name(button)
         self._pressed_inputs |= mask
 
     def hold_button(self, button: str | int) -> None:
-        """Hold a button across all future frames until release_button()."""
         mask = button if isinstance(button, int) else Button.from_name(button)
         self._held_inputs |= mask
 
     def release_button(self, button: str | int) -> None:
-        """Release a previously held button."""
         mask = button if isinstance(button, int) else Button.from_name(button)
         self._held_inputs    &= ~mask
         self._pressed_inputs &= ~mask
@@ -225,21 +205,16 @@ class MelonDSEmulator:
         self._pressed_inputs = 0
 
     def set_inputs(self, inputs: int) -> None:
-        """Set the complete held-button bitmask directly."""
         self._held_inputs = inputs
 
     def touch_screen(self, x: int, y: int) -> None:
-        """
-        Simulate a stylus press at (x, y) on the bottom screen.
-        x: 0–255, y: 0–191
-        """
         lib.melonds_set_touch(self._handle, x, y)
 
     def release_touch(self) -> None:
         lib.melonds_release_touch(self._handle)
 
     # ------------------------------------------------------------------
-    # Memory access — mirrors LibmgbaEmulator.read_bytes()
+    # Memory access
     # ------------------------------------------------------------------
 
     def read_u8(self, address: int) -> int:
@@ -261,29 +236,15 @@ class MelonDSEmulator:
         lib.melonds_mem_write_32(self._handle, address, value & 0xFFFFFFFF)
 
     def read_bytes(self, address: int, length: int) -> bytes:
-        """
-        Read `length` bytes from `address` and return as a bytes object.
-
-        Uses a fast memcpy path for Main RAM (0x02000000–0x023FFFFF).
-        This is the primary method for reading Pokémon data structures.
-
-        Mirrors LibmgbaEmulator.read_bytes() from the Gen 3 bot.
-        """
         buf = ffi.new(f"uint8_t[{length}]")
         n   = lib.melonds_mem_read_bulk(self._handle, address, buf, length)
         return bytes(ffi.buffer(buf, n))
 
     # ------------------------------------------------------------------
-    # Save states — in-memory, no disk I/O (mirrors libmgba)
+    # Save states
     # ------------------------------------------------------------------
 
     def save_state(self) -> bytes:
-        """
-        Capture a full emulator snapshot and return it as a bytes object.
-        No file I/O — this is fast enough to call every few seconds.
-
-        Mirrors LibmgbaEmulator.get_save_state().
-        """
         buf_ptr  = ffi.new("uint8_t**")
         size_ptr = ffi.new("size_t*")
         ok = lib.melonds_savestate_mem(self._handle, buf_ptr, size_ptr)
@@ -295,11 +256,6 @@ class MelonDSEmulator:
         return data
 
     def load_state(self, state: bytes) -> None:
-        """
-        Restore a snapshot previously captured with save_state().
-
-        Mirrors LibmgbaEmulator.load_save_state().
-        """
         buf = ffi.from_buffer(state)
         ok  = lib.melonds_loadstate_mem(self._handle, buf, len(state))
         if not ok:
@@ -316,22 +272,31 @@ class MelonDSEmulator:
             raise RuntimeError(f"melonds_loadstate() failed: {path}")
 
     # ------------------------------------------------------------------
-    # peek_frame — run ahead without keeping changes (like Gen3 bot)
+    # Cartridge SRAM
+    # ------------------------------------------------------------------
+
+    def save_sram(self, path: Optional[str | Path] = None) -> None:
+        """
+        Write cartridge SRAM (in-game save data) to disk.
+        If path is None, writes back to the original save_path.
+        """
+        target = str(path) if path else self._save_path
+        if not target:
+            raise RuntimeError(
+                "No save path available. Pass a path or set save_path in __init__."
+            )
+        ok = lib.melonds_save_sram(self._handle, target.encode())
+        if not ok:
+            err = lib.melonds_get_error(self._handle)
+            msg = ffi.string(err).decode() if err != ffi.NULL else "unknown"
+            raise RuntimeError(f"melonds_save_sram() failed: {msg}")
+
+    # ------------------------------------------------------------------
+    # peek_frame
     # ------------------------------------------------------------------
 
     @contextmanager
     def peek_frame(self, frames_to_advance: int = 1) -> Generator[None, None, None]:
-        """
-        Context manager: run N frames ahead, yield, then restore state.
-
-        Identical pattern to LibmgbaEmulator.peek_frame() in Gen3 bot.
-        Useful for checking what will happen without committing.
-
-            with emulator.peek_frame(30):
-                # 30 frames have been run
-                val = emulator.read_u32(addr)
-            # state is now restored — those 30 frames never happened
-        """
         snapshot = self.save_state()
         for _ in range(frames_to_advance):
             lib.melonds_run_frame(self._handle)
@@ -341,15 +306,10 @@ class MelonDSEmulator:
             self.load_state(snapshot)
 
     # ------------------------------------------------------------------
-    # Speed / render control (the key speedup vs Lua bot)
+    # Renderer control
     # ------------------------------------------------------------------
 
     def set_video_enabled(self, enabled: bool) -> None:
-        """
-        Toggle the 2D/3D renderer. Disabling it removes all GPU work
-        and is the primary speed multiplier — same trick the Gen3 bot
-        uses to reach 1000+ FPS.
-        """
         self._video_enabled = enabled
         lib.melonds_set_video_enabled(self._handle, int(enabled))
 
@@ -357,32 +317,8 @@ class MelonDSEmulator:
         self._audio_enabled = enabled
         lib.melonds_set_audio_enabled(self._handle, int(enabled))
 
-    @property
-    def video_enabled(self) -> bool:
-        return self._video_enabled
-
-    @property
-    def audio_enabled(self) -> bool:
-        return self._audio_enabled
-
-    # ------------------------------------------------------------------
-    # Reset
-    # ------------------------------------------------------------------
-
-    def reset(self) -> None:
-        """Hard reset the emulated DS."""
-        lib.melonds_reset(self._handle)
-
-    # ------------------------------------------------------------------
-    # Repr
-    # ------------------------------------------------------------------
-
-    def __repr__(self) -> str:
-        return (
-            f"MelonDSEmulator("
-            f"rom={self._rom_path!r}, "
-            f"frame={self.frame_count}, "
-            f"fps={self.current_fps}, "
-            f"video={self._video_enabled}, "
-            f"audio={self._audio_enabled})"
-        )
+    def get_framebuffer(self) -> Optional[bytes]:
+        ptr = lib.melonds_get_framebuffer(self._handle)
+        if ptr == ffi.NULL:
+            return None
+        return bytes(ffi.buffer(ptr, 256 * 384 * 4))
