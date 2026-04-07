@@ -30,9 +30,6 @@ GITHUB_RELEASES_URL = "https://github.com/bumblebrown/py-melonds/releases/downlo
 _PLATFORM_MAP = {
     ("Windows", "AMD64"):  "win64",
     ("Windows", "x86_64"): "win64",
-    ("Linux",   "x86_64"): "linux-x86_64",
-    ("Darwin",  "x86_64"): "macos-x86_64",
-    ("Darwin",  "arm64"):  "macos-arm64",
 }
 
 
@@ -43,7 +40,7 @@ def get_platform_suffix() -> str:
     if suffix is None:
         raise RuntimeError(
             f"Unsupported platform: {system} {machine}. "
-            "Supported: Windows x64, Linux x86_64, macOS Intel, macOS Apple Silicon."
+            "Only Windows 64-bit is currently supported."
         )
     return suffix
 

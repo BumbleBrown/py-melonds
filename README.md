@@ -4,7 +4,7 @@ Python bindings for [melonDS](https://github.com/melonDS-emu/melonDS), a Nintend
 
 The goal of this project is straightforward: expose melonDS to Python in the same way that [libmgba-py](https://github.com/hanzi/libmgba-py) exposes mGBA for Game Boy Advance, or [py-desmume](https://github.com/SkyTemple/py-desmume) exposes DeSmuME. No GUI, no window -- just a Python API you can call from a loop to run frames, read memory, and control input.
 
-Pre-built binaries for Windows are available on the [releases](../../releases) page. Linux and macOS build scripts are included but those platforms have not been tested -- if you get it working, pull requests are welcome.
+Pre-built binaries for Windows are available on the [releases](../../releases) page.
 
 ```python
 from melonds import MelonDSEmulator
@@ -27,7 +27,7 @@ while True:
 
 ### Pre-built (recommended)
 
-Download the zip for your platform from the [releases](../../releases) page and extract it. The `melonds/` folder inside is the Python package. Place it somewhere Python can find it, then install the one required dependency:
+Download the zip from the [releases](../../releases) page and extract it. The `melonds/` folder inside is the Python package. Place it somewhere Python can find it, then install the one required dependency:
 
 ```
 pip install cffi
@@ -195,14 +195,7 @@ py-melonds/
 
 ## Platform support
 
-| Platform | Status |
-|---|---|
-| Windows x64 | Tested and working |
-| Linux x86_64 | Build scripts included, not tested |
-| macOS Intel | Build scripts included, not tested |
-| macOS Apple Silicon | Build scripts included, not tested |
-
-If you get Linux or macOS working, please open a pull request.
+Windows 64-bit is the only supported platform. Pre-built binaries are available on the releases page.
 
 ## License
 

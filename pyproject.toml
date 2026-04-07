@@ -23,4 +23,4 @@ where = ["python"]
 
 [tool.setuptools.package-data]
 # Include the compiled shared library when it is present
-melonds = ["*.dll", "*.so", "*.dylib"]
+melonds = ["*.dll"]

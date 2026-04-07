@@ -1,17 +1,15 @@
 # .github/workflows/build-release.yml
 #
-# Builds the melonds shared library on Windows, Linux, and macOS and
-# packages each one as a zip file. When a version tag is pushed (e.g.
-# v0.1.0), those zips are attached to a GitHub release automatically.
+# Builds melonds.dll on Windows and packages it as a zip.
+# When a version tag is pushed (e.g. v0.1.0), the zip is attached
+# to a GitHub release automatically.
 #
 # Zip contents (extracted into a melonds/ folder by install.py):
 #   melonds/
 #     __init__.py
 #     core.py
 #     emulator.py
-#     melonds.dll        (Windows only)
-#     melonds.so         (Linux only)
-#     melonds.dylib      (macOS only)
+#     melonds.dll
 #
 # To publish a release:
 #   git tag v0.1.0
@@ -66,133 +64,18 @@ jobs:
           name: py-melonds-win64
           path: py-melonds-*-win64.zip
 
-  build-linux:
-    name: Linux x64
-    runs-on: ubuntu-22.04
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install build tools
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y cmake g++ ninja-build
-
-      - name: Configure CMake
-        run: |
-          cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DMELONDS_ENABLE_JIT=OFF \
-            -G Ninja
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Verify library exists
-        run: |
-          test -f python/melonds/melonds.so || \
-            (echo "melonds.so was not copied to python/melonds/" && exit 1)
-
-      - name: Create zip
-        run: |
-          version="${{ github.ref_name }}"
-          zip -j "py-melonds-${version}-linux-x86_64.zip" python/melonds/*
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: py-melonds-linux-x86_64
-          path: py-melonds-*-linux-x86_64.zip
-
-  build-macos-intel:
-    name: macOS Intel
-    runs-on: macos-13
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Configure CMake
-        run: |
-          cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DMELONDS_ENABLE_JIT=OFF
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Verify library exists
-        run: |
-          test -f python/melonds/melonds.dylib || \
-            (echo "melonds.dylib was not copied to python/melonds/" && exit 1)
-
-      - name: Create zip
-        run: |
-          version="${{ github.ref_name }}"
-          zip -j "py-melonds-${version}-macos-x86_64.zip" python/melonds/*
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: py-melonds-macos-x86_64
-          path: py-melonds-*-macos-x86_64.zip
-
-  build-macos-arm:
-    name: macOS Apple Silicon
-    runs-on: macos-14
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Configure CMake
-        run: |
-          cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DMELONDS_ENABLE_JIT=OFF \
-            -DCMAKE_OSX_ARCHITECTURES=arm64
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Verify library exists
-        run: |
-          test -f python/melonds/melonds.dylib || \
-            (echo "melonds.dylib was not copied to python/melonds/" && exit 1)
-
-      - name: Create zip
-        run: |
-          version="${{ github.ref_name }}"
-          zip -j "py-melonds-${version}-macos-arm64.zip" python/melonds/*
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: py-melonds-macos-arm64
-          path: py-melonds-*-macos-arm64.zip
-
   publish-release:
     name: Publish release
     needs:
       - build-windows
-      - build-linux
-      - build-macos-intel
-      - build-macos-arm
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     if: startsWith(github.ref, 'refs/tags/v')
 
     permissions:
       contents: write
 
     steps:
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -205,15 +88,12 @@ jobs:
           body: |
             Pre-built binaries for py-melonds ${{ github.ref_name }}.
 
-            Download the zip for your platform and extract it.
-            The melonds/ folder inside is the Python package -- no compiler needed.
+            Download the zip and extract it. The melonds/ folder inside
+            is the Python package -- no compiler required.
 
             | Platform | File |
             |---|---|
             | Windows 64-bit | py-melonds-${{ github.ref_name }}-win64.zip |
-            | Linux x86_64 | py-melonds-${{ github.ref_name }}-linux-x86_64.zip |
-            | macOS Intel | py-melonds-${{ github.ref_name }}-macos-x86_64.zip |
-            | macOS Apple Silicon | py-melonds-${{ github.ref_name }}-macos-arm64.zip |
           files: artifacts/*.zip
           draft: false
           prerelease: false

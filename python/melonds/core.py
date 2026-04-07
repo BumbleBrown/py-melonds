@@ -3,8 +3,8 @@ melonds/core.py
 ---------------
 Low-level CFFI bindings for the melonds shared library.
 
-This module finds and loads the compiled melonds.dll / melonds.so /
-melonds.dylib, then declares the C interface so CFFI can call into it.
+This module finds and loads melonds.dll, then declares the C interface
+so CFFI can call into it.
 
 Most users should import MelonDSEmulator from melonds.emulator instead
 of using this module directly. The ffi and lib objects are re-exported
@@ -135,10 +135,11 @@ def _find_library() -> str:
 
     if platform.system() == "Windows":
         lib_name = "melonds.dll"
-    elif platform.system() == "Darwin":
-        lib_name = "melonds.dylib"
     else:
-        lib_name = "melonds.so"
+        raise RuntimeError(
+            "py-melonds currently only provides pre-built binaries for Windows. "
+            "To use on another platform you will need to build from source."
+        )
 
     candidates = [
         os.path.join(this_dir, lib_name),
