@@ -1,15 +1,10 @@
 # .github/workflows/build-release.yml
 #
-# Builds melonds.dll on Windows and packages it as a zip.
+# Builds melonds.dll on Windows using MSYS2/MinGW64 -- the same
+# toolchain used for local builds. MSVC is not supported by melonDS.
+#
 # When a version tag is pushed (e.g. v0.1.0), the zip is attached
 # to a GitHub release automatically.
-#
-# Zip contents (extracted into a melonds/ folder by install.py):
-#   melonds/
-#     __init__.py
-#     core.py
-#     emulator.py
-#     melonds.dll
 #
 # To publish a release:
 #   git tag v0.1.0
@@ -35,28 +30,39 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+
       - name: Configure CMake
+        shell: msys2 {0}
         run: |
-          cmake -S . -B build `
-            -DCMAKE_BUILD_TYPE=Release `
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
             -DMELONDS_ENABLE_JIT=OFF
 
       - name: Build
-        run: cmake --build build --config Release --parallel
+        shell: msys2 {0}
+        run: cmake --build build --parallel
 
       - name: Verify library exists
+        shell: msys2 {0}
         run: |
-          if (-not (Test-Path "python/melonds/melonds.dll")) {
-            Write-Error "melonds.dll was not copied to python/melonds/"
-            exit 1
-          }
+          test -f python/melonds/melonds.dll || \
+            (echo "melonds.dll was not copied to python/melonds/" && exit 1)
 
       - name: Create zip
+        shell: msys2 {0}
         run: |
-          $version = "${{ github.ref_name }}"
-          Compress-Archive `
-            -Path python/melonds/* `
-            -DestinationPath "py-melonds-${version}-win64.zip"
+          version="${{ github.ref_name }}"
+          zip -j "py-melonds-${version}-win64.zip" python/melonds/*
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -68,7 +74,7 @@ jobs:
     name: Publish release
     needs:
       - build-windows
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
 
     permissions:
