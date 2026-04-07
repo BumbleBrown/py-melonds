@@ -95,17 +95,8 @@ static void copy_framebuffer(MelonDSHandle* h)
     void* top = nullptr;
     void* bot = nullptr;
 
-    soft->GetFramebuffersDirect(&top, &bot, 0);
+    soft->GetFramebuffers(&top, &bot);
 
-    if (top) {
-        bool has_data = false;
-        const uint32_t* t = static_cast<const uint32_t*>(top);
-        for (int i = 0; i < 256 * 4; i++) {
-            if (t[i]) { has_data = true; break; }
-        }
-        if (!has_data)
-            soft->GetFramebuffersDirect(&top, &bot, 1);
-    }
 
     if (top) memcpy(h->framebuffer,             top, 256 * 192 * sizeof(uint32_t));
     if (bot) memcpy(h->framebuffer + 256 * 192, bot, 256 * 192 * sizeof(uint32_t));
