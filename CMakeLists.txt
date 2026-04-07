@@ -13,6 +13,17 @@ endif()
 
 set(MELONDS_SRC "${CMAKE_SOURCE_DIR}/melonDS/src")
 
+# NDS.cpp includes version.h which melonDS normally generates during its own build.
+# We generate a minimal stub so it compiles as a submodule.
+if(NOT EXISTS "${MELONDS_SRC}/version.h")
+    file(WRITE "${MELONDS_SRC}/version.h"
+        "#pragma once\n"
+        "#define MELONDS_VERSION \"1.0\"\n"
+        "#define MELONDS_VERSION_MAJOR 1\n"
+        "#define MELONDS_VERSION_MINOR 0\n"
+    )
+endif()
+
 set(MELONDS_CORE_SOURCES
     ${MELONDS_SRC}/ARCodeFile.cpp
     ${MELONDS_SRC}/ARDatabaseDAT.cpp
