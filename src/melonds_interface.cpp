@@ -49,6 +49,8 @@ static void apply_input(MelonDSHandle* h) {
     auto* nds = get_nds(h);
     if (!nds) return;
     uint32_t hw_keys = (~h->current_keys) & 0xFFF;
+    if (h->current_keys != 0)
+        fprintf(stderr, "apply_input: current=%u hw=%u\n", h->current_keys, hw_keys);
     nds->SetKeyMask(hw_keys);
     if (h->touch_active)
         nds->TouchScreen(h->touch_x, h->touch_y);
@@ -59,12 +61,27 @@ static void apply_input(MelonDSHandle* h) {
 static void copy_framebuffer(MelonDSHandle* h) {
     auto* nds = get_nds(h);
     if (!nds || !h->video_enabled) return;
+
+    auto* soft = dynamic_cast<melonDS::SoftRenderer*>(&nds->GPU.GetRenderer());
+    if (!soft) return;
+
+    /* Try buffer 0 first, then buffer 1 */
     void* top = nullptr;
     void* bot = nullptr;
-    if (nds->GPU.GetFramebuffers(&top, &bot)) {
-        if (top) memcpy(h->framebuffer,             top, 256 * 192 * sizeof(uint32_t));
-        if (bot) memcpy(h->framebuffer + 256 * 192, bot, 256 * 192 * sizeof(uint32_t));
+    
+    soft->GetFramebuffersDirect(&top, &bot, 0);
+    uint32_t* t = static_cast<uint32_t*>(top);
+    bool has_data = false;
+    for (int i = 0; i < 256 * 192; i++) {
+        if (t[i]) { has_data = true; break; }
     }
+    
+    if (!has_data) {
+        soft->GetFramebuffersDirect(&top, &bot, 1);
+    }
+
+    if (top) memcpy(h->framebuffer,             top, 256 * 192 * sizeof(uint32_t));
+    if (bot) memcpy(h->framebuffer + 256 * 192, bot, 256 * 192 * sizeof(uint32_t));
 }
 
 static melonDS::NDSArgs build_nds_args(MelonDSHandle* h) {
@@ -127,8 +144,6 @@ MelonDSHandle* melonds_create(const char* bios7_path,
     try {
         melonDS::NDSArgs args = build_nds_args(h);
         h->nds = std::make_unique<melonDS::NDS>(std::move(args));
-        /* Set renderer after NDS is fully constructed */
-        h->nds->SetRenderer(std::make_unique<melonDS::SoftRenderer>(*h->nds));
     } catch (const std::exception& e) {
         h->set_error(e.what());
     }
@@ -167,8 +182,9 @@ int melonds_load_rom(MelonDSHandle* h, const char* rom_path) {
     if (!cart) { h->set_error("Failed to parse ROM"); return 0; }
 
     nds->SetNDSCart(std::move(cart));
-    nds->SetupDirectBoot(rom_path);
     nds->Reset();
+    nds->SetupDirectBoot(rom_path);
+    nds->Start();
     h->frame_count = 0;
     h->clear_error();
     return 1;
