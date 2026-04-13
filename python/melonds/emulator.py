@@ -519,7 +519,13 @@ class MelonDSEmulator:
         Simulate a stylus press at pixel (x, y) on the bottom screen.
         x: 0-255, y: 0-191.
         The touch stays active until release_touch() is called.
+        Raises ValueError for out-of-range coordinates.
         """
+        if not (0 <= x <= 255 and 0 <= y <= 191):
+            raise ValueError(
+                f"Touch coordinates out of bounds: ({x}, {y}). "
+                f"Valid range: x 0-255, y 0-191."
+            )
         lib.melonds_set_touch(self._handle, x, y)
 
     def release_touch(self) -> None:
