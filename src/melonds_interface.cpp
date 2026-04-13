@@ -40,6 +40,7 @@ struct MelonDSHandle {
     std::string bios7_path;
     std::string bios9_path;
     std::string firmware_path;
+    std::string rom_path;       // stored so Reset() can call SetupDirectBoot()
 
     uint32_t current_keys = 0;
     bool     touch_active = false;
@@ -96,7 +97,6 @@ static void copy_framebuffer(MelonDSHandle* h)
     void* bot = nullptr;
 
     soft->GetFramebuffers(&top, &bot);
-
 
     if (top) memcpy(h->framebuffer,             top, 256 * 192 * sizeof(uint32_t));
     if (bot) memcpy(h->framebuffer + 256 * 192, bot, 256 * 192 * sizeof(uint32_t));
@@ -207,6 +207,17 @@ void melonds_reset(MelonDSHandle* h)
     auto* nds = get_nds(h);
     if (!nds) return;
     nds->Reset();
+    /*
+     * Fix: call SetupDirectBoot() and Start() after Reset() so the ROM
+     * actually boots. melonds_load_rom() calls all three; the original
+     * melonds_reset() only called Reset() which left the CPU unstarted
+     * and the direct-boot vector unset -- resulting in a black screen.
+     */
+    if (!h->rom_path.empty())
+    {
+        nds->SetupDirectBoot(h->rom_path);
+        nds->Start();
+    }
     h->frame_count     = 0;
     h->audio_write_pos = 0;
     h->audio_read_pos  = 0;
@@ -239,6 +250,7 @@ int melonds_load_rom(MelonDSHandle* h, const char* rom_path)
     nds->Reset();
     nds->SetupDirectBoot(rom_path);
     nds->Start();
+    h->rom_path        = rom_path;   // store so Reset() can call SetupDirectBoot()
     h->frame_count     = 0;
     h->audio_write_pos = 0;
     h->audio_read_pos  = 0;
