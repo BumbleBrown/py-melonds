@@ -53,14 +53,14 @@ Copy `install.py` from this repo into your project and call it at startup:
 from pathlib import Path
 from install import install_melonds
 
-install_melonds(target_dir=Path("melonds"), version="v0.1.0")
+install_melonds(target_dir=Path("melonds"), version="v0.2.0")
 
 from melonds import MelonDSEmulator
 ```
 
 ### Build from source
 
-Requires Git, CMake 3.15+, and a C++17 compiler (MSVC 2022, GCC 11+, or Clang 13+).
+Requires Git, CMake 3.15+, and MinGW-w64 GCC via MSYS2. MSVC is not supported by melonDS.
 
 ```
 git clone --recurse-submodules https://github.com/bumblebrown/py-melonds.git
@@ -138,6 +138,7 @@ MelonDSEmulator(
 | `save_to_file(path)` | Write SRAM to a .dsv file. |
 | `set_rtc(datetime)` | Set the emulated clock. |
 | `sync_rtc_to_host()` | Sync clock to host system time. |
+| `get_rtc()` | Read the current emulated clock as a datetime. |
 | `save_state()` | Capture machine state as bytes. |
 | `load_state(data)` | Restore a captured state. |
 | `save_state_to_file(path)` | Write save state to disk. |
@@ -201,6 +202,3 @@ Windows 64-bit is the only supported platform. Pre-built binaries are available 
 
 melonDS is licensed under the GNU General Public License v3. This binding library is also released under GPL v3.
 
----
-
-*This project was developed with assistance from [Claude](https://claude.ai) by Anthropic. The goal was to do for melonDS what libmgba-py does for mGBA and py-desmume does for DeSmuME -- expose the emulator core to Python so it can be driven programmatically.*
