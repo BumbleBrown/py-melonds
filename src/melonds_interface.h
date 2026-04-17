@@ -274,6 +274,10 @@ void melonds_rtc_set_time(MelonDSHandle* handle,
 
 void melonds_rtc_sync_to_host(MelonDSHandle* handle);
 
+void melonds_rtc_get_time(MelonDSHandle* handle,
+                           int* year, int* month, int* day,
+                           int* hour, int* minute, int* second);
+
 /* ------------------------------------------------------------------ */
 /*  Save states                                                         */
 /* ------------------------------------------------------------------ */

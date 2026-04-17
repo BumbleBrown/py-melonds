@@ -659,6 +659,17 @@ class MelonDSEmulator:
         """Set the emulated RTC to the current host system time."""
         lib.melonds_rtc_sync_to_host(self._handle)
 
+    def get_rtc(self) -> datetime:
+        """Read the current emulated DS clock."""
+        year   = ffi.new("int *")
+        month  = ffi.new("int *")
+        day    = ffi.new("int *")
+        hour   = ffi.new("int *")
+        minute = ffi.new("int *")
+        second = ffi.new("int *")
+        lib.melonds_rtc_get_time(self._handle, year, month, day, hour, minute, second)
+        return datetime(year[0], month[0], day[0], hour[0], minute[0], second[0])
+
     # ------------------------------------------------------------------
     # Save states
     # ------------------------------------------------------------------

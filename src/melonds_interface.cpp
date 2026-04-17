@@ -479,6 +479,7 @@ void melonds_rtc_set_time(MelonDSHandle* h,
     mktime(&t);
 
     melonDS::RTC::StateData state = {};
+    state.StatusReg1 = (1<<1); // 24-hour mode; without this, SetState sanitizes hours >= 12 to 0
     state.DateTime[0] = to_bcd(year - 2000);
     state.DateTime[1] = to_bcd(month);
     state.DateTime[2] = to_bcd(day);
@@ -488,6 +489,15 @@ void melonds_rtc_set_time(MelonDSHandle* h,
     state.DateTime[6] = to_bcd(second);
 
     nds->RTC.SetState(state);
+}
+
+void melonds_rtc_get_time(MelonDSHandle* h,
+                           int* year, int* month, int* day,
+                           int* hour, int* minute, int* second)
+{
+    auto* nds = get_nds(h);
+    if (!nds) return;
+    nds->RTC.GetDateTime(*year, *month, *day, *hour, *minute, *second);
 }
 
 void melonds_rtc_sync_to_host(MelonDSHandle* h)
